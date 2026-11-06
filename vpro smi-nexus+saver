@@ -1,0 +1,1527 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════
+# NEXUS CUDA MATH BENCH v5.0 — Aissa Mohammedi (DGK)
+# Licence : NEXUS-OPEN-2.0
+# Objectif : benchmark mathématique multi-langages + driver SMI Nexus
+#            custom (remplace nvidia-smi) + Battery Saver + JSON config
+#            + Google Breach Test + monitoring temps réel.
+# Cible : Linux Mint / Ubuntu / Debian / a-Shell
+# Lignes : 1600
+# WALLAH DGK — CETTE OEUVRE EST MONSTRUEUSE 🔥
+# ═══════════════════════════════════════════════════════════════════════════
+
+set -u
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CONFIGURATION GLOBALE
+# ═══════════════════════════════════════════════════════════════════════════
+
+VERSION="5.0.0"
+AUTEUR="Aissa Mohammedi (DGK)"
+LICENCE="NEXUS-OPEN-2.0"
+CODENAME="CUDA Math Bench + Nexus SMI"
+
+N_ITERATIONS_DEFAUT=10000000
+CONSTANTE_E_DEFAUT=2.718281828459045
+CONSTANTE_PI_DEFAUT=3.141592653589793
+SEUIL_BATTERIE=20
+SEUIL_BATTERIE_ULTRA=10
+DIR_TRAVAIL="/tmp/nexus_cuda_bench_$$"
+REPORT_DIR="$HOME/Documents/nexus_cuda_bench"
+SMI_DIR="$HOME/Documents/nexus_smi"
+REPORT_FILE=""
+LOG_FILE=""
+SMI_JSON=""
+BENCH_START_EPOCH=0
+BENCH_START_WATTS=0
+BENCH_START_CAP=0
+
+# ═══════════════════════════════════════════════════════════════════════════
+# COULEURS ANSI
+# ═══════════════════════════════════════════════════════════════════════════
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    R='\033[0;31m'; G='\033[0;32m'; Y='\033[1;33m'; B='\033[0;36m'
+    P='\033[0;35m'; C='\033[1;36m'; D='\033[0;90m'; N='\033[0m'
+    BOLD='\033[1m'; U='\033[4m'
+    BG_GREEN='\033[42m'; BG_RED='\033[41m'; BG_YELLOW='\033[43m'
+    BG_CYAN='\033[46m'
+else
+    R=''; G=''; Y=''; B=''; P=''; C=''; D=''; N=''
+    BOLD=''; U=''; BG_GREEN=''; BG_RED=''; BG_YELLOW=''; BG_CYAN=''
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FONCTIONS DE LOG
+# ═══════════════════════════════════════════════════════════════════════════
+
+log_info()    { printf "${B}[INFO]${N} %s\n" "$1"; }
+log_ok()      { printf "${G}[ OK ]${N} %s\n" "$1"; }
+log_warn()    { printf "${Y}[WARN]${N} %s\n" "$1"; }
+log_err()     { printf "${R}[FAIL]${N} %s\n" "$1"; }
+log_sep()     { printf "${D}───────────────────────────────────────────────────────${N}\n"; }
+log_title()   { printf "\n${C}${BOLD}═══ %s ═══${N}\n\n" "$1"; }
+log_num()     { printf "${P}#${N} %s\n" "$1"; }
+log_step()    { printf "${BG_GREEN}${BOLD} STEP ${N} %s\n" "$1"; }
+log_alert()   { printf "${BG_RED}${BOLD} ALERT ${N} %s\n" "$1"; }
+log_success() { printf "${BG_GREEN}${BOLD} SUCCESS ${N} %s\n" "$1"; }
+log_smi()     { printf "${BG_CYAN}${BOLD} SMI ${N} %s\n" "$1"; }
+
+log_to_file() {
+    if [ -n "$LOG_FILE" ]; then
+        printf "[%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG_FILE" 2>/dev/null
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# UTILITAIRES
+# ═══════════════════════════════════════════════════════════════════════════
+
+have() { command -v "$1" >/dev/null 2>&1; }
+now_ts()    { date '+%Y-%m-%d %H:%M:%S'; }
+now_epoch() { date +%s; }
+
+format_number() {
+    printf "%'.0f" "$1" 2>/dev/null || echo "$1"
+}
+
+human_bytes() {
+    local b=$1
+    if [ "$b" -lt 1024 ]; then echo "${b} o"
+    elif [ "$b" -lt 1048576 ]; then echo "$((b / 1024)) Ko"
+    elif [ "$b" -lt 1073741824 ]; then echo "$((b / 1048576)) Mo"
+    else echo "$((b / 1073741824)) Go"; fi
+}
+
+safe_mkdir() {
+    [ -d "$1" ] || mkdir -p "$1" 2>/dev/null || return 1
+    return 0
+}
+
+extract_json_number() {
+    local file="$1" key="$2"
+    [ ! -f "$file" ] && { echo ""; return; }
+    grep -o "\"$key\"[[:space:]]*:[[:space:]]*[0-9.]*" "$file" 2>/dev/null \
+        | head -1 | sed 's/.*:[[:space:]]*//'
+}
+
+extract_json_string() {
+    local file="$1" key="$2"
+    [ ! -f "$file" ] && { echo ""; return; }
+    grep -o "\"$key\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$file" 2>/dev/null \
+        | head -1 | sed 's/.*:[[:space:]]*"//' | sed 's/"$//'
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE NEXUS SMI — Driver custom (remplace nvidia-smi)
+# ═══════════════════════════════════════════════════════════════════════════
+
+smi_init() {
+    safe_mkdir "$SMI_DIR" || true
+    SMI_JSON="$SMI_DIR/smi_last.json"
+    log_smi "Driver Nexus SMI initialisé"
+    log_smi "Répertoire : $SMI_DIR"
+}
+
+smi_detect_gpu_vendor() {
+    # Détecte le vendor GPU via lspci
+    if ! have lspci; then
+        echo "unknown"
+        return
+    fi
+
+    local info
+    info=$(lspci 2>/dev/null | grep -iE 'vga|3d|display' | head -1)
+
+    if echo "$info" | grep -qi "nvidia"; then
+        echo "nvidia"
+    elif echo "$info" | grep -qi "amd\|radeon\|advanced micro"; then
+        echo "amd"
+    elif echo "$info" | grep -qi "intel"; then
+        echo "intel"
+    else
+        echo "unknown"
+    fi
+}
+
+smi_detect_gpu_name() {
+    if have lspci; then
+        lspci 2>/dev/null | grep -iE 'vga|3d|display' | head -1 \
+            | sed 's/.*: //' | sed 's/ (rev.*//'
+    else
+        echo "GPU inconnu"
+    fi
+}
+
+smi_detect_driver() {
+    # Détecte le driver actif
+    if have nvidia-smi; then
+        echo "nvidia-proprietary"
+        return
+    fi
+
+    if [ -d /sys/module/nvidia ]; then
+        echo "nvidia-kernel"
+        return
+    fi
+
+    if [ -d /sys/module/amdgpu ]; then
+        echo "amdgpu"
+        return
+    fi
+
+    if [ -d /sys/module/i915 ]; then
+        echo "i915-intel"
+        return
+    fi
+
+    if [ -d /sys/module/radeon ]; then
+        echo "radeon-legacy"
+        return
+    fi
+
+    if [ -d /sys/module/nouveau ]; then
+        echo "nouveau-open"
+        return
+    fi
+
+    echo "unknown"
+}
+
+smi_read_gpu_temp() {
+    # Lit la température GPU depuis /sys
+    local temp_file
+    for temp_file in /sys/class/hwmon/hwmon*/temp1_input; do
+        [ -r "$temp_file" ] || continue
+        local name
+        name=$(cat "${temp_file%temp1_input}name" 2>/dev/null)
+        case "$name" in
+            *amdgpu*|*nouveau*|*nvidia*|*radeon*|*i915*)
+                local v
+                v=$(cat "$temp_file" 2>/dev/null)
+                if [ -n "$v" ]; then
+                    echo $((v / 1000))
+                    return
+                fi
+                ;;
+        esac
+    done
+    echo "0"
+}
+
+smi_read_gpu_freq() {
+    # Fréquence GPU courante
+    for f in /sys/class/drm/card*/device/pp_dpm_sclk \
+             /sys/class/drm/card*/gt_cur_freq_mhz; do
+        [ -r "$f" ] || continue
+        local v
+        v=$(cat "$f" 2>/dev/null | head -1)
+        if [ -n "$v" ]; then
+            echo "$v"
+            return
+        fi
+    done
+    echo "0"
+}
+
+smi_read_gpu_mem() {
+    # VRAM utilisée / totale
+    local used=0 total=0
+
+    for f in /sys/class/drm/card*/device/mem_info_vram_used; do
+        [ -r "$f" ] || continue
+        used=$(cat "$f" 2>/dev/null)
+        break
+    done
+
+    for f in /sys/class/drm/card*/device/mem_info_vram_total; do
+        [ -r "$f" ] || continue
+        total=$(cat "$f" 2>/dev/null)
+        break
+    done
+
+    if [ -n "$used" ] && [ -n "$total" ] && [ "$total" -gt 0 ]; then
+        echo "$used $total"
+    else
+        echo "0 0"
+    fi
+}
+
+smi_read_gpu_load() {
+    # Charge GPU en %
+    for f in /sys/class/drm/card*/device/gpu_busy_percent; do
+        [ -r "$f" ] || continue
+        cat "$f" 2>/dev/null
+        return
+    done
+    echo "0"
+}
+
+smi_read_gpu_power() {
+    # Puissance GPU
+    for f in /sys/class/drm/card*/device/hwmon/hwmon*/power1_average \
+             /sys/class/drm/card*/device/power1_average; do
+        [ -r "$f" ] || continue
+        local v
+        v=$(cat "$f" 2>/dev/null)
+        if [ -n "$v" ]; then
+            # micowatt vers watt
+            echo $((v / 1000000))
+            return
+        fi
+    done
+    echo "0"
+}
+
+smi_read_cpu_temp() {
+    # Temp CPU via hwmon ou thermal_zone
+    for f in /sys/class/thermal/thermal_zone*/temp; do
+        [ -r "$f" ] || continue
+        local v
+        v=$(cat "$f" 2>/dev/null)
+        if [ -n "$v" ] && [ "$v" -gt 0 ]; then
+            echo $((v / 1000))
+            return
+        fi
+    done
+    echo "0"
+}
+
+smi_read_cpu_freq() {
+    local f=/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq
+    if [ -r "$f" ]; then
+        local v
+        v=$(cat "$f" 2>/dev/null)
+        echo $((v / 1000))
+    else
+        echo "0"
+    fi
+}
+
+smi_read_ram() {
+    if [ -r /proc/meminfo ]; then
+        awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{printf "%d %d", (t-a), t}' /proc/meminfo
+    else
+        echo "0 0"
+    fi
+}
+
+smi_read_disque() {
+    if [ -d / ]; then
+        df -k / 2>/dev/null | tail -1 | awk '{print $3, $2}'
+    else
+        echo "0 0"
+    fi
+}
+
+smi_read_uptime() {
+    if [ -r /proc/uptime ]; then
+        awk '{print int($1)}' /proc/uptime
+    else
+        echo "0"
+    fi
+}
+
+smi_scan_complet() {
+    # Scan complet et retourne un JSON
+    local vendor name driver
+    local gpu_temp gpu_freq gpu_load gpu_power
+    local mem_used mem_total
+    local cpu_temp cpu_freq
+    local ram_used ram_total
+    local disk_used disk_total
+    local uptime_s
+
+    vendor=$(smi_detect_gpu_vendor)
+    name=$(smi_detect_gpu_name)
+    driver=$(smi_detect_driver)
+    gpu_temp=$(smi_read_gpu_temp)
+    gpu_freq=$(smi_read_gpu_freq)
+    gpu_load=$(smi_read_gpu_load)
+    gpu_power=$(smi_read_gpu_power)
+    read -r mem_used mem_total <<< "$(smi_read_gpu_mem)"
+    cpu_temp=$(smi_read_cpu_temp)
+    cpu_freq=$(smi_read_cpu_freq)
+    read -r ram_used ram_total <<< "$(smi_read_ram)"
+    read -r disk_used disk_total <<< "$(smi_read_disque)"
+    uptime_s=$(smi_read_uptime)
+
+    cat > "$SMI_JSON" << ENDJSON
+{
+  "version": "$VERSION",
+  "driver": "Nexus SMI",
+  "auteur": "$AUTEUR",
+  "timestamp": "$(now_ts)",
+  "gpu": {
+    "vendor": "$vendor",
+    "name": "$name",
+    "driver_kernel": "$driver",
+    "temperature_c": $gpu_temp,
+    "frequence_mhz": "$gpu_freq",
+    "charge_pct": $gpu_load,
+    "puissance_w": $gpu_power,
+    "vram_used_bytes": $mem_used,
+    "vram_total_bytes": $mem_total
+  },
+  "cpu": {
+    "temperature_c": $cpu_temp,
+    "frequence_mhz": $cpu_freq
+  },
+  "ram": {
+    "used_kb": $ram_used,
+    "total_kb": $ram_total
+  },
+  "disque": {
+    "used_kb": $disk_used,
+    "total_kb": $disk_total
+  },
+  "uptime_seconds": $uptime_s
+}
+ENDJSON
+}
+
+smi_afficher() {
+    log_title "Nexus SMI — Monitoring système"
+
+    smi_scan_complet
+
+    local vendor name driver
+    local gpu_temp gpu_freq gpu_load gpu_power
+    local mem_used mem_total
+    local cpu_temp cpu_freq
+    local ram_used ram_total
+    local disk_used disk_total
+    local uptime_s
+
+    vendor=$(smi_detect_gpu_vendor)
+    name=$(smi_detect_gpu_name)
+    driver=$(smi_detect_driver)
+    gpu_temp=$(smi_read_gpu_temp)
+    gpu_freq=$(smi_read_gpu_freq)
+    gpu_load=$(smi_read_gpu_load)
+    gpu_power=$(smi_read_gpu_power)
+    read -r mem_used mem_total <<< "$(smi_read_gpu_mem)"
+    cpu_temp=$(smi_read_cpu_temp)
+    cpu_freq=$(smi_read_cpu_freq)
+    read -r ram_used ram_total <<< "$(smi_read_ram)"
+    read -r disk_used disk_total <<< "$(smi_read_disque)"
+    uptime_s=$(smi_read_uptime)
+
+    log_smi "GPU Vendor  : $vendor"
+    log_smi "GPU Name    : $name"
+    log_smi "GPU Driver  : $driver"
+    log_smi "GPU Temp    : ${gpu_temp}°C"
+    log_smi "GPU Freq    : ${gpu_freq} MHz"
+    log_smi "GPU Charge  : ${gpu_load}%"
+    log_smi "GPU Power   : ${gpu_power} W"
+
+    if [ "$mem_total" -gt 0 ]; then
+        local used_mb=$((mem_used / 1048576))
+        local total_mb=$((mem_total / 1048576))
+        log_smi "VRAM        : ${used_mb} / ${total_mb} Mo"
+    else
+        log_smi "VRAM        : indisponible"
+    fi
+
+    log_smi "CPU Temp    : ${cpu_temp}°C"
+    log_smi "CPU Freq    : ${cpu_freq} MHz"
+
+    if [ "$ram_total" -gt 0 ]; then
+        local used_mb=$((ram_used / 1024))
+        local total_mb=$((ram_total / 1024))
+        log_smi "RAM         : ${used_mb} / ${total_mb} Mo"
+    fi
+
+    if [ "$disk_total" -gt 0 ]; then
+        local used_gb=$((disk_used / 1048576))
+        local total_gb=$((disk_total / 1048576))
+        log_smi "Disque /    : ${used_gb} / ${total_gb} Go"
+    fi
+
+    log_smi "Uptime      : $((uptime_s / 3600))h $(((uptime_s % 3600) / 60))m"
+    log_smi "JSON        : $SMI_JSON"
+
+    return 0
+}
+
+smi_watch() {
+    # Monitoring continu
+    local intervalle="${1:-5}"
+    log_title "Nexus SMI — Watch mode (Ctrl+C pour arrêter)"
+    log_info "Intervalle : ${intervalle}s"
+    echo ""
+
+    while true; do
+        clear
+        printf "${BG_CYAN}${BOLD} NEXUS SMI ${N} — $(now_ts)\n\n"
+        smi_afficher
+        sleep "$intervalle"
+    done
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE BATTERIE
+# ═══════════════════════════════════════════════════════════════════════════
+
+battery_path() {
+    local bat
+    bat=$(ls /sys/class/power_supply/ 2>/dev/null | grep -i '^BAT' | head -1)
+    [ -n "$bat" ] && echo "/sys/class/power_supply/$bat"
+}
+
+battery_capacity() {
+    local p; p=$(battery_path)
+    [ -n "$p" ] && [ -r "$p/capacity" ] && cat "$p/capacity" 2>/dev/null
+}
+
+battery_status() {
+    local p; p=$(battery_path)
+    [ -n "$p" ] && [ -r "$p/status" ] && cat "$p/status" 2>/dev/null
+}
+
+battery_voltage() {
+    local p; p=$(battery_path)
+    if [ -n "$p" ] && [ -r "$p/voltage_now" ]; then
+        local v; v=$(cat "$p/voltage_now" 2>/dev/null)
+        echo $((v / 1000))
+    fi
+}
+
+battery_current() {
+    local p; p=$(battery_path)
+    if [ -n "$p" ] && [ -r "$p/current_now" ]; then
+        local c; c=$(cat "$p/current_now" 2>/dev/null)
+        echo $((c / 1000))
+    fi
+}
+
+battery_health() {
+    local p; p=$(battery_path)
+    [ -n "$p" ] && [ -r "$p/health" ] && cat "$p/health" 2>/dev/null
+}
+
+battery_cycles() {
+    local p; p=$(battery_path)
+    [ -n "$p" ] && [ -r "$p/cycle_count" ] && cat "$p/cycle_count" 2>/dev/null
+}
+
+battery_power_watts() {
+    local v c
+    v=$(battery_voltage); c=$(battery_current)
+    if [ -n "$v" ] && [ -n "$c" ] && [ "$v" -gt 0 ]; then
+        awk -v v="$v" -v c="$c" 'BEGIN{printf "%.2f", (v*c)/1000000}'
+    fi
+}
+
+afficher_batterie() {
+    local cap sta v c p h cyc
+    cap=$(battery_capacity); sta=$(battery_status)
+    v=$(battery_voltage); c=$(battery_current)
+    p=$(battery_power_watts); h=$(battery_health); cyc=$(battery_cycles)
+
+    if [ -z "$cap" ]; then
+        log_warn "Batterie introuvable (desktop ou VM)"
+        return 1
+    fi
+
+    printf "  Capacité : %s%%\n" "$cap"
+    printf "  Statut   : %s\n" "${sta:-?}"
+    [ -n "$v" ] && printf "  Tension  : %s mV\n" "$v"
+    [ -n "$c" ] && printf "  Courant  : %s mA\n" "$c"
+    [ -n "$p" ] && printf "  Puissance: %s W\n" "$p"
+    [ -n "$h" ] && printf "  Santé    : %s\n" "$h"
+    [ -n "$cyc" ] && printf "  Cycles   : %s\n" "$cyc"
+
+    if [ "$cap" -lt "$SEUIL_BATTERIE" ] && [ "$sta" != "Charging" ]; then
+        log_warn "Batterie faible (< ${SEUIL_BATTERIE}%)"
+        return 2
+    fi
+    return 0
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE BATTERY SAVER
+# ═══════════════════════════════════════════════════════════════════════════
+
+SAVER_STATE_FILE="/tmp/nexus_saver_state_$$"
+
+sauvegarder_etat_saver() {
+    : > "$SAVER_STATE_FILE"
+    local cpu_gov
+    cpu_gov=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo "")
+    echo "CPU_GOV=$cpu_gov" >> "$SAVER_STATE_FILE"
+
+    local screen_bright=""
+    if have xrandr; then
+        screen_bright=$(xrandr --verbose 2>/dev/null | grep -i brightness | head -1 | awk '{print $2}')
+    fi
+    [ -n "$screen_bright" ] && echo "BRIGHT=$screen_bright" >> "$SAVER_STATE_FILE"
+
+    if have rfkill; then
+        local bt_state
+        bt_state=$(rfkill list bluetooth 2>/dev/null | grep -i "soft blocked" | head -1 | grep -c "yes" || echo "0")
+        echo "BT_BLOCKED=$bt_state" >> "$SAVER_STATE_FILE"
+
+        local wifi_state
+        wifi_state=$(rfkill list wifi 2>/dev/null | grep -i "soft blocked" | head -1 | grep -c "yes" || echo "0")
+        echo "WIFI_BLOCKED=$wifi_state" >> "$SAVER_STATE_FILE"
+    fi
+}
+
+activer_powersave() {
+    log_step "Activation mode POWERSAVE"
+
+    if have cpupower; then
+        sudo cpupower frequency-set -g powersave >/dev/null 2>&1 && \
+            log_ok "CPU governor → powersave" || log_warn "cpupower échoué"
+    elif [ -w /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor ]; then
+        echo powersave | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor >/dev/null 2>&1 && \
+            log_ok "CPU governor → powersave (direct)" || log_warn "Écriture échouée"
+    fi
+
+    if have tlp; then
+        sudo tlp bat >/dev/null 2>&1 && log_ok "TLP mode battery" || true
+    fi
+
+    if [ -w /sys/class/backlight/*/brightness ]; then
+        for bl in /sys/class/backlight/*/brightness; do
+            local maxb
+            maxb=$(cat "${bl%brightness}max_brightness" 2>/dev/null)
+            if [ -n "$maxb" ] && [ "$maxb" -gt 0 ]; then
+                local target=$((maxb * 35 / 100))
+                echo "$target" | sudo tee "$bl" >/dev/null 2>&1 && \
+                    log_ok "Luminosité → 35%" || true
+            fi
+        done
+    fi
+
+    if have rfkill; then
+        sudo rfkill block bluetooth 2>/dev/null && log_ok "Bluetooth bloqué" || true
+    fi
+}
+
+restaurer_etat() {
+    log_step "Restauration état initial"
+
+    if [ -f "$SAVER_STATE_FILE" ]; then
+        local cpu_gov bright bt_blocked wifi_blocked
+        cpu_gov=$(grep "^CPU_GOV=" "$SAVER_STATE_FILE" | cut -d= -f2)
+        if [ -n "$cpu_gov" ]; then
+            if have cpupower; then
+                sudo cpupower frequency-set -g "$cpu_gov" >/dev/null 2>&1 || true
+            else
+                echo "$cpu_gov" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor >/dev/null 2>&1 || true
+            fi
+            log_ok "CPU governor → $cpu_gov"
+        fi
+
+        bright=$(grep "^BRIGHT=" "$SAVER_STATE_FILE" | cut -d= -f2)
+        if [ -n "$bright" ]; then
+            for bl in /sys/class/backlight/*/brightness; do
+                echo "$bright" | sudo tee "$bl" >/dev/null 2>&1 || true
+            done
+            log_ok "Luminosité → $bright"
+        fi
+
+        bt_blocked=$(grep "^BT_BLOCKED=" "$SAVER_STATE_FILE" | cut -d= -f2)
+        if [ "$bt_blocked" = "0" ] && have rfkill; then
+            sudo rfkill unblock bluetooth 2>/dev/null && log_ok "Bluetooth rétabli" || true
+        fi
+
+        wifi_blocked=$(grep "^WIFI_BLOCKED=" "$SAVER_STATE_FILE" | cut -d= -f2)
+        if [ "$wifi_blocked" = "0" ] && have rfkill; then
+            sudo rfkill unblock wifi 2>/dev/null && log_ok "Wi-Fi rétabli" || true
+        fi
+    fi
+
+    if have tlp; then
+        sudo tlp start >/dev/null 2>&1 || true
+    fi
+
+    rm -f "$SAVER_STATE_FILE" 2>/dev/null
+}
+
+battery_saver_auto() {
+    local cap
+    cap=$(battery_capacity)
+    [ -z "$cap" ] && return 0
+
+    if [ "$cap" -lt "$SEUIL_BATTERIE_ULTRA" ]; then
+        log_alert "Batterie < ${SEUIL_BATTERIE_ULTRA}% → mode ULTRA"
+        sauvegarder_etat_saver
+        activer_powersave
+        return 2
+    elif [ "$cap" -lt "$SEUIL_BATTERIE" ]; then
+        log_warn "Batterie < ${SEUIL_BATTERIE}% → mode ÉCO"
+        sauvegarder_etat_saver
+        activer_powersave
+        return 1
+    fi
+    return 0
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE GOOGLE BREACH TEST
+# ═══════════════════════════════════════════════════════════════════════════
+
+breach_test_google() {
+    log_title "Google Breach Test"
+    log_info "Vérification des connexions sortantes vers Google..."
+
+    local total=0 suspects=0
+
+    if have ss || have netstat; then
+        local cmd="ss -tnp"
+        have ss || cmd="netstat -tnp"
+
+        local connexions
+        connexions=$($cmd 2>/dev/null | grep ESTAB | head -100)
+
+        while IFS= read -r ligne; do
+            [ -z "$ligne" ] && continue
+            total=$((total + 1))
+            if echo "$ligne" | grep -qiE "google|goog|gstatic|googleapis|1e100|ggpht|gvt1|youtube"; then
+                suspects=$((suspects + 1))
+                log_warn "$ligne"
+            fi
+        done <<< "$connexions"
+    fi
+
+    log_sep
+    log_info "Total connexions analysées : $total"
+    [ "$suspects" -gt 0 ] && log_warn "$suspects connexion(s) Google" || log_ok "Aucune connexion Google"
+
+    log_info "Test DNS :"
+    if have getent; then
+        for h in google.com www.google.com gstatic.com; do
+            local r; r=$(getent hosts "$h" 2>/dev/null | head -1)
+            [ -n "$r" ] && printf "  %-20s %s\n" "$h" "$r" || printf "  %-20s (non résolu)\n" "$h"
+        done
+    fi
+
+    log_info "Ping Google :"
+    if have ping; then
+        ping -c 3 -W 1 google.com 2>/dev/null | tail -3 || log_warn "Ping échoué"
+    fi
+
+    log_ok "Breach test terminé"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE SYSTÈME
+# ═══════════════════════════════════════════════════════════════════════════
+
+afficher_systeme() {
+    local os_name="?"
+    if [ -f /etc/os-release ]; then
+        os_name=$(. /etc/os-release; echo "$PRETTY_NAME")
+    fi
+
+    printf "  OS       : %s\n" "$os_name"
+    printf "  Kernel   : %s\n" "$(uname -r)"
+    printf "  Arch     : %s\n" "$(uname -m)"
+    printf "  Hostname : %s\n" "$(hostname)"
+    printf "  User     : %s\n" "${USER:-?}"
+    printf "  CPU      : %s\n" "$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 | xargs)"
+    printf "  Cores    : %s\n" "$(nproc 2>/dev/null || echo '?')"
+    printf "  RAM      : %s\n" "$(free -h 2>/dev/null | awk '/^Mem:/{print $2}')"
+    printf "  Disque / : %s libre sur %s\n" \
+        "$(df -h / 2>/dev/null | tail -1 | awk '{print $4}')" \
+        "$(df -h / 2>/dev/null | tail -1 | awk '{print $2}')"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE RÉPERTOIRE / JSON
+# ═══════════════════════════════════════════════════════════════════════════
+
+preparer_dir() {
+    mkdir -p "$DIR_TRAVAIL" || { log_err "Impossible de créer $DIR_TRAVAIL"; exit 1; }
+    cd "$DIR_TRAVAIL" || exit 1
+    log_ok "Répertoire de travail : $DIR_TRAVAIL"
+
+    safe_mkdir "$REPORT_DIR" && log_ok "Rapports : $REPORT_DIR"
+    LOG_FILE="$REPORT_DIR/bench_$(date +%Y%m%d_%H%M%S).log"
+    REPORT_FILE="$REPORT_DIR/report_$(date +%Y%m%d_%H%M%S).json"
+    log_to_file "=== NEXUS CUDA MATH BENCH v$VERSION ==="
+}
+
+ecrire_json_config() {
+    cat > config.json << 'ENDJSON'
+{
+  "version": "5.0.0",
+  "auteur": "Aissa Mohammedi",
+  "licence": "NEXUS-OPEN-2.0",
+  "constante_e": 2.718281828459045,
+  "constante_pi": 3.141592653589793,
+  "n_iterations": 10000000,
+  "mode": "benchmark",
+  "cible": "multi-langages",
+  "battery_saver": true,
+  "breach_test": true,
+  "nexus_smi": true,
+  "watt_budget": 15
+}
+ENDJSON
+    log_ok "config.json écrit"
+
+    N_ITERATIONS=$(extract_json_number config.json "n_iterations")
+    [ -z "$N_ITERATIONS" ] && N_ITERATIONS=$N_ITERATIONS_DEFAUT
+
+    CONSTANTE_E=$(extract_json_number config.json "constante_e")
+    [ -z "$CONSTANTE_E" ] && CONSTANTE_E=$CONSTANTE_E_DEFAUT
+
+    CONSTANTE_PI=$(extract_json_number config.json "constante_pi")
+    [ -z "$CONSTANTE_PI" ] && CONSTANTE_PI=$CONSTANTE_PI_DEFAUT
+
+    log_ok "Config : N=$N_ITERATIONS, e=$CONSTANTE_E, pi=$CONSTANTE_PI"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE JAVA
+# ═══════════════════════════════════════════════════════════════════════════
+
+ecrire_java() {
+    local N=$N_ITERATIONS E=$CONSTANTE_E PI=$CONSTANTE_PI
+
+    cat > Calc.java << ENDJAVA
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Instant;
+
+public class Calc {
+    private static final double E  = $E;
+    private static final double PI = $PI;
+    private static final long   N  = ${N}L;
+
+    public static double sommeHarmonique(double c, long n) {
+        double s = 0.0;
+        for (long i = 1; i <= n; i++) s += c / (double) i;
+        return s;
+    }
+
+    public static double factorielle(int n) {
+        double f = 1.0;
+        for (int i = 2; i <= n; i++) f *= i;
+        return f;
+    }
+
+    public static double fib(int n) {
+        double a = 0, b = 1;
+        for (int i = 0; i < n; i++) { double c = a + b; a = b; b = c; }
+        return a;
+    }
+
+    public static void main(String[] args) {
+        long t0 = System.currentTimeMillis();
+        double s1 = sommeHarmonique(E, N);
+        double s2 = sommeHarmonique(PI, N);
+        double p  = E * PI;
+        double f  = factorielle(20);
+        double fb = fib(90);
+        long t1 = System.currentTimeMillis();
+        System.out.printf("Java   : n=%d  somme_e=%.6f  somme_pi=%.6f%n", N, s1, s2);
+        System.out.printf("         e*pi=%.6f  20!=%.2e  fib(90)=%.0f%n", p, f, fb);
+        System.out.printf("         temps=%d ms%n", t1 - t0);
+    }
+}
+ENDJAVA
+    log_ok "Calc.java écrit"
+}
+
+compiler_java() {
+    have javac || { log_warn "javac absent"; return 1; }
+    javac Calc.java 2>/dev/null || { log_err "Compilation Java échouée"; return 1; }
+    log_ok "Compilation Java OK"
+}
+
+executer_java() {
+    [ -f Calc.class ] || return 1
+    java Calc 2>/dev/null
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE RUST
+# ═══════════════════════════════════════════════════════════════════════════
+
+ecrire_rust() {
+    local N=$N_ITERATIONS E=$CONSTANTE_E PI=$CONSTANTE_PI
+
+    cat > Cargo.toml << 'ENDTOML'
+[package]
+name = "nexus_cuda_calc"
+version = "5.0.0"
+edition = "2021"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+ENDTOML
+
+    mkdir -p src
+    cat > src/main.rs << ENDRUST
+use std::time::Instant;
+
+const E:  f64 = $E;
+const PI: f64 = $PI;
+
+fn somme_harmonique(c: f64, n: u64) -> f64 {
+    let mut s: f64 = 0.0;
+    for i in 1..=n { s += c / (i as f64); }
+    s
+}
+
+fn factorielle(n: u32) -> f64 {
+    let mut f: f64 = 1.0;
+    for i in 2..=n { f *= i as f64; }
+    f
+}
+
+fn fib(n: u32) -> f64 {
+    let (mut a, mut b): (f64, f64) = (0.0, 1.0);
+    for _ in 0..n { let c = a + b; a = b; b = c; }
+    a
+}
+
+fn main() {
+    let t0 = Instant::now();
+    let n: u64 = $N;
+    let s1 = somme_harmonique(E, n);
+    let s2 = somme_harmonique(PI, n);
+    let p  = E * PI;
+    let f  = factorielle(20);
+    let fb = fib(90);
+    let dt = t0.elapsed();
+    println!("Rust   : n={}  somme_e={:.6}  somme_pi={:.6}", n, s1, s2);
+    println!("         e*pi={:.6}  20!={:.2e}  fib(90)={:.0}", p, f, fb);
+    println!("         temps={} ms", dt.as_millis());
+}
+ENDRUST
+    log_ok "src/main.rs écrit"
+}
+
+compiler_rust() {
+    have cargo || { log_warn "cargo absent"; return 1; }
+    cargo build --release -q 2>/dev/null || { log_err "Compilation Rust échouée"; return 1; }
+    log_ok "Compilation Rust OK"
+}
+
+executer_rust() {
+    [ -x target/release/nexus_cuda_calc ] || return 1
+    ./target/release/nexus_cuda_calc 2>/dev/null
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE PYTHON
+# ═══════════════════════════════════════════════════════════════════════════
+
+ecrire_python() {
+    local N=$N_ITERATIONS E=$CONSTANTE_E PI=$CONSTANTE_PI
+
+    cat > calc.py << ENDPY
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+import math, time
+
+E  = $E
+PI = $PI
+N  = $N
+
+def somme_harmonique(c, n):
+    return sum(c / i for i in range(1, n + 1))
+
+def factorielle(n):
+    return math.factorial(n)
+
+def fib(n):
+    a, b = 0, 1
+    for _ in range(n): a, b = b, a + b
+    return a
+
+def main():
+    t0 = time.time()
+    s1 = somme_harmonique(E, N)
+    s2 = somme_harmonique(PI, N)
+    p = E * PI
+    f = factorielle(20)
+    fb = fib(90)
+    dt = (time.time() - t0) * 1000
+    print(f"Python : n={N}  somme_e={s1:.6f}  somme_pi={s2:.6f}")
+    print(f"         e*pi={p:.6f}  20!={f:.2e}  fib(90)={fb}")
+    print(f"         temps={dt:.1f} ms")
+
+if __name__ == "__main__":
+    main()
+ENDPY
+    chmod +x calc.py
+    log_ok "calc.py écrit"
+}
+
+executer_python() {
+    have python3 || { log_warn "python3 absent"; return 1; }
+    python3 calc.py
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE CUDA
+# ═══════════════════════════════════════════════════════════════════════════
+
+ecrire_cuda() {
+    local N=$N_ITERATIONS E=$CONSTANTE_E
+
+    cat > calc.cu << ENDCUDA
+#include <stdio.h>
+#include <cuda_runtime.h>
+
+__global__ void somme_kernel(float *r, float c, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) atomicAdd(r, c / (float)(i + 1));
+}
+
+int main() {
+    int n = $N;
+    float *d_somme, h_somme = 0.0f;
+    cudaMalloc(&d_somme, sizeof(float));
+    cudaMemcpy(d_somme, &h_somme, sizeof(float), cudaMemcpyHostToDevice);
+
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    cudaEventRecord(start);
+
+    int threads = 256;
+    int blocks = (n + threads - 1) / threads;
+    somme_kernel<<<blocks, threads>>>(d_somme, ${E}f, n);
+    cudaDeviceSynchronize();
+
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float ms = 0.0f;
+    cudaEventElapsedTime(&ms, start, stop);
+
+    cudaMemcpy(&h_somme, d_somme, sizeof(float), cudaMemcpyDeviceToHost);
+
+    printf("CUDA   : n=%d  blocks=%d  threads=%d\\n", n, blocks, threads);
+    printf("         somme=%.6f\\n", h_somme);
+    printf("         temps=%.2f ms (GPU)\\n", ms);
+
+    cudaFree(d_somme);
+    return 0;
+}
+ENDCUDA
+    log_ok "calc.cu écrit"
+}
+
+compiler_cuda() {
+    have nvcc || { log_warn "nvcc absent"; return 1; }
+    nvcc -O2 calc.cu -o calc_cuda 2>/dev/null || { log_err "Compilation CUDA échouée"; return 1; }
+    log_ok "Compilation CUDA OK"
+}
+
+executer_cuda() {
+    [ -x calc_cuda ] || return 1
+    ./calc_cuda
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE C++
+# ═══════════════════════════════════════════════════════════════════════════
+
+ecrire_cpp() {
+    local N=$N_ITERATIONS E=$CONSTANTE_E PI=$CONSTANTE_PI
+
+    cat > calc.cpp << ENDCPP
+#include <iostream>
+#include <cmath>
+#include <chrono>
+#include <iomanip>
+
+constexpr double E  = $E;
+constexpr double PI = $PI;
+constexpr long   N  = ${N}L;
+
+double somme_harmonique(double c, long n) {
+    double s = 0.0;
+    for (long i = 1; i <= n; ++i) s += c / static_cast<double>(i);
+    return s;
+}
+
+double factorielle(int n) {
+    double f = 1.0;
+    for (int i = 2; i <= n; ++i) f *= i;
+    return f;
+}
+
+double fib(int n) {
+    double a = 0.0, b = 1.0;
+    for (int i = 0; i < n; ++i) { double c = a + b; a = b; b = c; }
+    return a;
+}
+
+int main() {
+    auto t0 = std::chrono::steady_clock::now();
+    double s1 = somme_harmonique(E, N);
+    double s2 = somme_harmonique(PI, N);
+    double p  = E * PI;
+    double f  = factorielle(20);
+    double fb = fib(90);
+    auto t1 = std::chrono::steady_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+
+    std::cout << std::fixed << std::setprecision(6);
+    std::cout << "C++    : n=" << N << "  somme_e=" << s1 << "  somme_pi=" << s2 << "\\n";
+    std::cout << "         e*pi=" << p << "  20!=" << std::scientific << f << std::fixed
+              << "  fib(90)=" << std::setprecision(0) << fb << "\\n";
+    std::cout << "         temps=" << ms << " ms\\n";
+    return 0;
+}
+ENDCPP
+    log_ok "calc.cpp écrit"
+}
+
+compiler_cpp() {
+    have g++ || { log_warn "g++ absent"; return 1; }
+    g++ -O2 -std=c++17 calc.cpp -o calc_cpp 2>/dev/null || { log_err "Compilation C++ échouée"; return 1; }
+    log_ok "Compilation C++ OK"
+}
+
+executer_cpp() {
+    [ -x calc_cpp ] || return 1
+    ./calc_cpp
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE JAVASCRIPT
+# ═══════════════════════════════════════════════════════════════════════════
+
+ecrire_js() {
+    local N=$N_ITERATIONS E=$CONSTANTE_E PI=$CONSTANTE_PI
+
+    cat > calc.js << ENDJS
+const E  = $E;
+const PI = $PI;
+const N  = $N;
+
+function somme(c, n) {
+    let s = 0;
+    for (let i = 1; i <= n; i++) s += c / i;
+    return s;
+}
+
+function fact(n) {
+    let f = 1;
+    for (let i = 2; i <= n; i++) f *= i;
+    return f;
+}
+
+function fib(n) {
+    let a = 0, b = 1;
+    for (let i = 0; i < n; i++) { const c = a + b; a = b; b = c; }
+    return a;
+}
+
+const t0 = Date.now();
+const s1 = somme(E, N);
+const s2 = somme(PI, N);
+const p  = E * PI;
+const f  = fact(20);
+const fb = fib(90);
+const dt = Date.now() - t0;
+
+console.log(\`JS     : n=\${N}  somme_e=\${s1.toFixed(6)}  somme_pi=\${s2.toFixed(6)}\`);
+console.log(\`         e*pi=\${p.toFixed(6)}  20!=\${f.toExponential(2)}  fib(90)=\${fb}\`);
+console.log(\`         temps=\${dt} ms\`);
+ENDJS
+    log_ok "calc.js écrit"
+}
+
+executer_js() {
+    have node || { log_warn "node absent"; return 1; }
+    node calc.js
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MODULE GO
+# ═══════════════════════════════════════════════════════════════════════════
+
+ecrire_go() {
+    local N=$N_ITERATIONS
+
+    cat > calc.go << ENDGO
+package main
+
+import (
+    "fmt"
+    "math"
+    "time"
+)
+
+func somme(c float64, n int) float64 {
+    var s float64 = 0
+    for i := 1; i <= n; i++ { s += c / float64(i) }
+    return s
+}
+
+func fact(n int) float64 {
+    var f float64 = 1
+    for i := 2; i <= n; i++ { f *= float64(i) }
+    return f
+}
+
+func fib(n int) float64 {
+    var a, b float64 = 0, 1
+    for i := 0; i < n; i++ { c := a + b; a = b; b = c }
+    return a
+}
+
+func main() {
+    t0 := time.Now()
+    n := $N
+    e := math.E
+    pi := math.Pi
+    s1 := somme(e, n)
+    s2 := somme(pi, n)
+    p := e * pi
+    f := fact(20)
+    fb := fib(90)
+    dt := time.Since(t0).Milliseconds()
+    fmt.Printf("Go     : n=%d  somme_e=%.6f  somme_pi=%.6f\\n", n, s1, s2)
+    fmt.Printf("         e*pi=%.6f  20!=%.2e  fib(90)=%.0f\\n", p, f, fb)
+    fmt.Printf("         temps=%d ms\\n", dt)
+}
+ENDGO
+    log_ok "calc.go écrit"
+}
+
+compiler_go() {
+    have go || { log_warn "go absent"; return 1; }
+    go build -o calc_go calc.go 2>/dev/null || { log_err "Compilation Go échouée"; return 1; }
+    log_ok "Compilation Go OK"
+}
+
+executer_go() {
+    [ -x calc_go ] || return 1
+    ./calc_go
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ORCHESTRATION BENCHMARK
+# ═══════════════════════════════════════════════════════════════════════════
+
+TEMPS_TOTAL_START=""
+
+demarrer_benchmark() {
+    TEMPS_TOTAL_START=$(now_epoch)
+    BENCH_START_EPOCH=$(now_epoch)
+    BENCH_START_WATTS=$(battery_power_watts)
+    BENCH_START_CAP=$(battery_capacity)
+}
+
+run_java()   { log_num "Java";       compiler_java && executer_java; }
+run_rust()   { log_num "Rust";       compiler_rust && executer_rust; }
+run_python() { log_num "Python";     executer_python; }
+run_cuda()   { log_num "CUDA";       compiler_cuda && executer_cuda; }
+run_cpp()    { log_num "C++";        compiler_cpp && executer_cpp; }
+run_js()     { log_num "JavaScript"; executer_js; }
+run_go()     { log_num "Go";         compiler_go && executer_go; }
+
+lancer_tous() {
+    log_title "Benchmark multi-langages"
+    run_java; echo ""
+    run_rust; echo ""
+    run_python; echo ""
+    run_cpp; echo ""
+    run_js; echo ""
+    run_go; echo ""
+    run_cuda; echo ""
+
+    local dt=$(( $(now_epoch) - TEMPS_TOTAL_START ))
+    log_sep
+    log_success "Benchmark terminé en ${dt}s"
+    log_sep
+}
+
+lancer_rapide() {
+    log_title "Benchmark rapide (Python + JS)"
+    run_python; echo ""
+    run_js
+}
+
+lancer_gpu_only() {
+    log_title "Benchmark GPU uniquement (CUDA)"
+    run_cuda
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# RAPPORT FINAL
+# ═══════════════════════════════════════════════════════════════════════════
+
+generer_rapport() {
+    local cap_fin watts_start watts_end duree_total economie_watts
+    local gpu_temp gpu_vendor gpu_driver
+
+    cap_fin=$(battery_capacity)
+    watts_start=${BENCH_START_WATTS:-0}
+    watts_end=$(battery_power_watts)
+    duree_total=$(( $(now_epoch) - BENCH_START_EPOCH ))
+
+    gpu_temp=$(smi_read_gpu_temp)
+    gpu_vendor=$(smi_detect_gpu_vendor)
+    gpu_driver=$(smi_detect_driver)
+
+    log_title "Rapport final"
+
+    log_info "Durée totale     : ${duree_total}s"
+    log_info "Batterie début   : ${BENCH_START_CAP:-?}%"
+    log_info "Batterie fin     : ${cap_fin:-?}%"
+    log_info "Watts début      : ${watts_start} W"
+    log_info "Watts fin        : ${watts_end:-0} W"
+    log_info "GPU vendor       : $gpu_vendor"
+    log_info "GPU driver       : $gpu_driver"
+    log_info "GPU temp         : ${gpu_temp}°C"
+
+    if [ -n "$watts_start" ] && [ -n "$watts_end" ] && [ "$watts_start" != "0" ]; then
+        economie_watts=$(awk -v a="$watts_start" -v b="$watts_end" 'BEGIN{printf "%.2f", a-b}')
+        log_info "Économie watts   : ${economie_watts} W"
+    fi
+
+    smi_scan_complet
+
+    cat > "$REPORT_FILE" << ENDJSON
+{
+  "version": "$VERSION",
+  "auteur": "$AUTEUR",
+  "licence": "$LICENCE",
+  "timestamp": "$(now_ts)",
+  "duree_secondes": $duree_total,
+  "batterie_debut_pct": ${BENCH_START_CAP:-0},
+  "batterie_fin_pct": ${cap_fin:-0},
+  "watts_debut": ${watts_start:-0},
+  "watts_fin": ${watts_end:-0},
+  "economie_watts": ${economie_watts:-0},
+  "gpu": {
+    "vendor": "$gpu_vendor",
+    "driver": "$gpu_driver",
+    "temperature_c": ${gpu_temp:-0}
+  },
+  "nexus_smi_json": "$SMI_JSON",
+  "n_iterations": $N_ITERATIONS,
+  "constante_e": $CONSTANTE_E,
+  "constante_pi": $CONSTANTE_PI
+}
+ENDJSON
+
+    log_ok "Rapport JSON : $REPORT_FILE"
+    log_ok "Log complet  : $LOG_FILE"
+    log_ok "Nexus SMI    : $SMI_JSON"
+
+    if have jq; then
+        log_sep
+        log_info "Rapport formaté (jq) :"
+        jq . "$REPORT_FILE" 2>/dev/null || cat "$REPORT_FILE"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NETTOYAGE
+# ═══════════════════════════════════════════════════════════════════════════
+
+nettoyer() {
+    if [ -d "$DIR_TRAVAIL" ]; then
+        cd / 2>/dev/null
+        rm -rf "$DIR_TRAVAIL" 2>/dev/null
+        log_ok "Nettoyage : $DIR_TRAVAIL supprimé"
+    fi
+    if [ -f "$SAVER_STATE_FILE" ]; then
+        restaurer_etat
+    fi
+}
+
+trap_cleanup() {
+    echo ""
+    log_warn "Interruption détectée — nettoyage..."
+    nettoyer
+    exit 130
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MENU
+# ═══════════════════════════════════════════════════════════════════════════
+
+afficher_menu() {
+    echo ""
+    echo "  Que veux-tu faire ?"
+    echo ""
+    echo "    1)  Benchmark complet (7 langages)"
+    echo "    2)  Benchmark rapide (Python + JS)"
+    echo "    3)  Benchmark GPU uniquement (CUDA)"
+    echo "    4)  Afficher la batterie"
+    echo "    5)  Nexus SMI (scan GPU/CPU/RAM/Disque)"
+    echo "    6)  Nexus SMI watch (monitoring continu)"
+    echo "    7)  Afficher le système"
+    echo "    8)  Afficher les outils disponibles"
+    echo "    9)  Activer Battery Saver maintenant"
+    echo "   10)  Restaurer état initial"
+    echo "   11)  Google Breach Test"
+    echo "   12)  Tout (benchmark + smi + breach + rapport)"
+    echo "    0)  Quitter"
+    echo ""
+    printf "  Choix : "
+}
+
+outils_disponibles() {
+    log_title "Outils détectés"
+    local outils=(javac java cargo rustc python3 node npm g++ nvcc go jq lspci rfkill)
+    for o in "${outils[@]}"; do
+        if have "$o"; then
+            local v
+            v=$("$o" --version 2>&1 | head -1 | cut -c1-60)
+            log_ok "$o : $v"
+        else
+            log_warn "$o : absent"
+        fi
+    done
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# BANNIÈRE
+# ═══════════════════════════════════════════════════════════════════════════
+
+banniere() {
+    clear
+    echo ""
+    printf "${P}╔═══════════════════════════════════════════════════════════╗${N}\n"
+    printf "${P}║${N}  ${C}${BOLD}NEXUS CUDA MATH BENCH${N} v${VERSION}                     ${P}║${N}\n"
+    printf "${P}║${N}  Auteur  : ${AUTEUR}                    ${P}║${N}\n"
+    printf "${P}║${N}  Licence : ${LICENCE}                          ${P}║${N}\n"
+    printf "${P}╚═══════════════════════════════════════════════════════════╝${N}\n"
+    echo ""
+    printf "${D}  Java + Rust + Python + C++ + JavaScript + Go + CUDA${N}\n"
+    printf "${D}  + Nexus SMI custom + Battery Saver + Google Breach${N}\n"
+    echo ""
+    printf "${Y}${BOLD}  WALLAH DGK — CETTE OEUVRE EST MONSTRUEUSE 🔥${N}\n"
+    echo ""
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════════
+
+main() {
+    banniere
+    trap trap_cleanup INT TERM
+
+    preparer_dir
+    smi_init
+    ecrire_json_config
+    ecrire_java
+    ecrire_rust
+    ecrire_python
+    ecrire_cpp
+    ecrire_js
+    ecrire_go
+    ecrire_cuda
+
+    echo ""
+    log_title "Système"
+    afficher_systeme
+
+    echo ""
+    log_title "Batterie"
+    afficher_batterie
+
+    echo ""
+    smi_afficher
+
+    echo ""
+    log_title "Outils"
+    outils_disponibles
+
+    battery_saver_auto
+
+    demarrer_benchmark
+
+    if [ "${1:-}" = "auto" ]; then
+        lancer_tous
+        [ "${2:-}" = "breach" ] && breach_test_google
+        generer_rapport
+        nettoyer
+        exit 0
+    fi
+
+    if [ "${1:-}" = "test" ]; then
+        lancer_rapide
+        generer_rapport
+        nettoyer
+        exit 0
+    fi
+
+    if [ "${1:-}" = "smi" ]; then
+        smi_afficher
+        exit 0
+    fi
+
+    if [ "${1:-}" = "watch" ]; then
+        smi_watch "${2:-5}"
+        exit 0
+    fi
+
+    while true; do
+        echo ""
+        afficher_menu
+        read -r choix
+        case "$choix" in
+            1) lancer_tous ;;
+            2) lancer_rapide ;;
+            3) lancer_gpu_only ;;
+            4) echo ""; afficher_batterie ;;
+            5) echo ""; smi_afficher ;;
+            6) echo ""; smi_watch 5 ;;
+            7) echo ""; afficher_systeme ;;
+            8) echo ""; outils_disponibles ;;
+            9) echo ""; sauvegarder_etat_saver; activer_powersave ;;
+            10) echo ""; restaurer_etat ;;
+            11) echo ""; breach_test_google ;;
+            12)
+                lancer_tous
+                echo ""
+                smi_afficher
+                echo ""
+                breach_test_google
+                generer_rapport
+                ;;
+            0)
+                generer_rapport
+                nettoyer
+                log_success "Terminé."
+                exit 0
+                ;;
+            *) log_err "Choix invalide" ;;
+        esac
+    done
+}
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    echo ""
+    echo "Usage: $0 [auto|test|smi|watch|breach|--help]"
+    echo ""
+    echo "  auto      Benchmark complet automatique"
+    echo "  auto breach  Benchmark + Google Breach Test"
+    echo "  test      Benchmark rapide (Python + JS)"
+    echo "  smi       Nexus SMI (scan seul)"
+    echo "  watch N   Nexus SMI monitoring continu (N=intervalle en s)"
+    echo "  breach    Google Breach Test seul"
+    echo "  (rien)    Menu interactif"
+    echo ""
+    exit 0
+fi
+
+if [ "${1:-}" = "breach" ]; then
+    banniere
+    breach_test_google
+    exit 0
+fi
+
+main "${1:-}"

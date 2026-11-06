@@ -1,0 +1,68 @@
+*.i
+*.ii
+*.gpu
+*.ptx
+*.cubin
+*.fatbin
+# === NEXUS SEO - BUILD ARTIFACTS ===
+/tmp/
+nexus_build/
+target/
+build/
+dist/
+*.class
+*.o
+*.so
+
+# Binaries générés par le bench
+calc_cuda
+calc_cpp
+calc_go
+calc_py
+calc_java
+nexus_cuda_calc
+
+# Rust
+Cargo.lock
+Cargo.toml.bak
+src/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# Go
+go.sum
+
+# Reports & logs - SEO important, on ne push pas les résultats locaux
+Documents/nexus_cuda_bench/
+*.log
+*.json
+!config.example.json
+!package.json
+report_*.json
+bench_*.log
+resultats.txt
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.code-workspace
+
+# Battery saver state
+nexus_saver_state
+*.state

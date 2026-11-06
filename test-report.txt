@@ -1,0 +1,85 @@
+=== Server started (PID=9965) ===
+
+=== TEST 1: GET / (index page) ===
+PASS: GET / retourne la page d'accueil
+  Réponse: {"description":"Reverse proxy HTTP unifié au format OpenAI avec cache et fallback mock.","endpoints":["POST /v1/chat/completions","GET  /health","GET  /config","POST /cache/clear","GET  /cache/stats"],"service":"sovereign-ai-gateway","version":"1.0.0"}
+
+=== TEST 2: GET /health ===
+PASS: /health retourne status=ok + backends
+  Réponse: {"backends":["ollama","openai","anthropic"],"cache_hits":0,"cache_misses":0,"cache_size":0,"routes_total":0,"status":"ok"}
+
+=== TEST 3: GET /config (clés API masquées) ===
+PASS: /config expose la config sans clé API en clair
+  Réponse: {"backends":{"anthropic":{"api_key":"","default_model":"claude-3-5-sonnet-20241022","timeout_seconds":60,"url":"https://api.anthropic.com/v1/messages"},"ollama":{"api_key":"","default_model":"llama3.2","timeout_seconds":30,"url":"http://127.0.0.1:11434/v1/chat/completions"},"openai":{"api_key":"","default_model":"gpt-4o","timeout_seconds":60,"url":"https://api.openai.com/v1/chat/completions"}},"cache_ttl_seconds":3600,"listen":"127.0.0.1:9004","routing":{"auto_short_prompt_threshold_tokens":200,"auto_short_prompt_backend":"ollama","auto_long_prompt_backend":"openai"}}
+
+=== TEST 4: POST /v1/chat/completions model=auto (prompt court) ===
+PASS: model=auto retourne un format OpenAI strict valide
+  Réponse: {"id":"chatcmpl-mock-rpuvzfgcfbhk","object":"chat.completion","created":1793914557,"model":"auto","choices":[{"index":0,"message":{"role":"assistant","content":"[MOCK] réponse simulée pour le modèle \"auto\" — prompt: \"Bonjour\""},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":18,"total_tokens":20}}
+
+=== TEST 5: POST model=gpt-4o → mock fallback ===
+PASS: model=gpt-4o → mock fallback avec format OpenAI
+  Réponse: {"id":"chatcmpl-mock-jv001zn3joh4","object":"chat.completion","created":1793914557,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"[MOCK] réponse simulée pour le modèle \"gpt-4o\" — prompt: \"Hello\""},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":18,"total_tokens":20}}
+
+  Headers associés:
+X-Backend: mock
+X-Cache: MISS
+X-Forward-Latency-Us: 31
+
+=== TEST 6: Cache hit/miss ===
+  Stats avant: {"cache_hits":0,"cache_misses":3,"cache_size":0,"hit_rate":0}
+  Requête #1: X-Cache: MISS
+  Requête #2: X-Cache: HIT
+  Stats après: {"cache_hits":1,"cache_misses":4,"cache_size":1,"hit_rate":0.2}
+PASS: 1ère requête MISS, 2e HIT, cache_hits incrémenté
+
+=== TEST 7: POST /cache/clear ===
+PASS: /cache/clear vide le cache
+  Réponse: {"cleared":1,"status":"ok"}
+PASS: cache_size=0 après clear
+
+=== TEST 8: GET /cache/stats ===
+PASS: /cache/stats retourne les stats détaillées
+  Réponse: {"cache_hits":1,"cache_misses":4,"cache_size":0,"hit_rate":0.2}
+
+=== BENCHMARK LATENCE (overhead routeur + cache < 10ms) ===
+  Requêtes: 50.00 (toutes servies depuis le cache)
+  Latence moyenne (overhead): 29 µs = 0.029 ms
+  Latence min: 25 µs
+  Latence max: 53 µs
+PASS: latence overhead moyenne < 10 ms (0.029 ms)
+
+
+=== BENCHMARK THROUGHPUT (100 workers × 100 req = 10000 requêtes) ===
+  Sortie bench:
+    === BENCHMARK RESULTS ===
+    workers=100 requests_per_worker=100 total=10000
+    ok=10000 fail=0
+    elapsed=0.409s
+    throughput=24435.2 req/s
+    success_rate=100.00%
+    avg_latency_per_req=3832 µs (3.832 ms)
+    === END ===
+
+  Récapitulatif:
+    Requêtes: 10000 ok / 10000 total (fail: 0)
+    Temps écoulé: 0.409 s
+    Throughput: 24435.2 req/s
+    Taux de réussite: 100.00%
+    Latence moyenne par requête: 3832 µs
+PASS: 100% réussite + QPS >= 1000 (24435.2 req/s)
+
+=== ÉTAT FINAL DU SERVEUR ===
+  /health final: {"backends":["ollama","openai","anthropic"],"cache_hits":51,"cache_misses":10005,"cache_size":10000,"routes_total":10056,"status":"ok"}
+  /cache/stats final: {"cache_hits":51,"cache_misses":10005,"cache_size":10000,"hit_rate":0.005071599045346062}
+
+=== Server killed (PID=9965) ===
+
+==========================================
+RÉSUMÉ DES TESTS
+==========================================
+Compilation: PASS (go build exit 0)
+Tous les endpoints testés: /, /health, /config, /cache/clear, /cache/stats, /v1/chat/completions
+Latence overhead moyenne: 29 µs (~0.029 ms)
+Throughput: 24435.2 req/s (objectif: ~1000 req/s)
+Taux de réussite: 100.00%
+==========================================

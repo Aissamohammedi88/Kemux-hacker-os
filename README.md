@@ -8,9 +8,7 @@
   [![Virtual](https://img.shields.io/badge/Environment-Real_Virtual-red?style=for-the-badge)](#)
   [![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](#)
 </div>
-
 ---
-
 ## 🧬 Overview
 
 **Kemus** is not a web-based simulation of an operating system. It is a **real virtual environment** running inside your browser (Mozilla Firefox). 
@@ -42,9 +40,7 @@ Built-in workflow runner. You can write YAML workflows (like GitHub Actions) and
 
 ### 5. Web-Native Interface
 The entire OS runs in a browser tab. The UI is a native web interface, with a terminal, file manager, text editor, and workflow studio. All accessible via `http://127.0.0.1:3922`.
-
 ---
-
 ## 🛠️ Architecture
 
 ```mermaid
@@ -53,7 +49,6 @@ graph TD
     B --> C[Debian Light Virtual Environment]
     C --> D[Terminal / File Manager / Workflow Studio]
     D --> E[Systemic Languages: Gecko, Myrddin, Minz, Sespoul, CoreX]
-    
     style B fill:#00ff9d,color:#000
     style C fill:#A80030,color:#fff
     style E fill:#00d4ff,color:#000

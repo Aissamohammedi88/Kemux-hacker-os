@@ -10,13 +10,11 @@
 </div>
 ---
 ## 🧬 Overview
-
 **Kemus** is not a web-based simulation of an operating system. It is a **real virtual environment** running inside your browser (Mozilla Firefox). 
 
-Built on a **lightweight Debian base**, Kemus provides a full workstation environment where you can run workflows, execute commands, and manage files exactly as you would on your physical machine. The difference? It's completely isolated, ultra-lightweight, and requires zero installation.
+Built on a **lightweight Debian base**, Kemus provides a full workstation environment where you can run workflows, execute commands, and manage files exactly as you would on your physical machine. The difference? It's completely isolated,ultra-lightweight, and requires zero installation.
 
 **The Kemus Philosophy:** *If it doesn't work in a real environment, it's not a real OS.*
-
 ---
 
 ## 🚀 Key Features
@@ -55,4 +53,3 @@ graph TD
 linux-battery-saver-cuda-gpu-benchmark-toolkit+smi not nvdia driver = nexus driver smi open source
 Open-source Linux battery saver + CUDA GPU benchmark. Optimizes power, tests Java Rust Python C++ JS Go CUDA. For Ubuntu, Mint, Debian.
 # Linux Battery Saver & CUDA GPU Benchmark Toolkit
-
